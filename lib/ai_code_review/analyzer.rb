@@ -33,20 +33,26 @@ module AiCodeReview
     def parse_report(json_data)
       return [] if json_data.nil? || json_data.strip.empty?
 
+      # 获取当前项目的根路径（绝对路径）
+      root_path = File.expand_path(Dir.pwd)
+
       data = JSON.parse(json_data)
       data['files'].map do |file_data|
         offenses = file_data['offenses']
         next if offenses.empty?
 
+        # 【核心修正点】
+        # 1. 获取文件的绝对路径
+        abs_path = File.expand_path(file_data['path'])
+        # 2. 减去根路径前缀，得到相对路径 (例如: lib/test.rb)
+        # 注意：这里要处理掉路径开头的 /
+        relative_path = abs_path.sub(%r{^#{Regexp.escape(root_path)}/?}, '')
+
         {
-          file_path: file_data['path'],
+          file_path: relative_path,
           issues: offenses.map do |o|
-                    {
-                      line: o['location']['start_line'],
-                      message: o['message'],
-                      cop_name: o['cop_name']
-                    }
-                  end
+            { line: o['location']['start_line'], message: o['message'], cop_name: o['cop_name'] }
+          end
         }
       end.compact
     end
