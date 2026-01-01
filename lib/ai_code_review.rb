@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'dotenv/load'
 require 'json'
 require_relative 'ai_code_review/analyzer'
@@ -6,8 +8,8 @@ require_relative 'ai_code_review/reporter'
 
 module AiCodeReview
   class << self
-    def start(path = ".")
-      puts "🚀 AI Code Review 启动..."
+    def start(path = '.')
+      puts '🚀 AI Code Review 启动...'
       analyzer = Analyzer.new(path)
 
       # 1. 自动修复基础格式问题
@@ -17,28 +19,37 @@ module AiCodeReview
       results = analyzer.run
 
       if results.empty?
-        puts "✅ 代码非常完美，无需 AI 介入。"
+        puts '✅ 代码非常完美，无需 AI 介入。'
         return
       end
 
       # 3. 初始化组件
       ai_client = AiClient.new
 
-      # 只有当环境变量存在时才初始化 Reporter
-      repo = ENV['GITHUB_REPOSITORY']
-      pr_id = ENV['GITHUB_PR_NUMBER']
-      reporter = (repo && pr_id) ? Reporter.new(repo, pr_id) : nil
+      all_review_items = [] # 用于收集所有文件的建议
 
-      # 4. 逐个评审
       results.each do |result|
-        puts "\n📄 正在评审: #{result[:file_path]}"
+        puts "\n📄 正在分析: #{result[:file_path]}"
 
+        # 为了实现行内评论，我们可能需要让 AI 针对每个 issue 给出短建议
+        # 或者直接取第一个 issue 的行号作为锚点
         suggestion = ai_client.get_review_suggestions(result[:file_path], result[:issues])
 
-        puts "💡 AI 建议：\n#{suggestion}"
+        # 获取该文件第一个问题的行号作为锚点（或者你可以根据 AI 返回细化）
+        line_anchor = result[:issues].first[:line]
 
-        # 5. 发布到 GitHub
-        reporter&.publish(result[:file_path], suggestion)
+        all_review_items << {
+          file_path: result[:file_path],
+          line: line_anchor,
+          suggestion: suggestion
+        }
+      end
+
+      # 最后统一发布
+      repo = ENV['GITHUB_REPOSITORY']
+      pr_id = ENV['GITHUB_PR_NUMBER']
+      if repo && pr_id && !all_review_items.empty?
+        Reporter.new(repo, pr_id).publish_review(all_review_items)
       end
     end
   end

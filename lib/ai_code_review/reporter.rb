@@ -3,29 +3,36 @@ require 'octokit'
 module AiCodeReview
   class Reporter
     def initialize(repo_name, pr_number)
-      @repo_name = repo_name # 格式如 "user/project"
-      @pr_number = pr_number
+      @repo_name = repo_name
+      @pr_number = pr_number.to_i
       @client = Octokit::Client.new(access_token: ENV['GITHUB_TOKEN'])
     end
 
-    def publish(file_path, suggestion)
-      puts "📤 正在将建议发布到 GitHub PR ##{@pr_number}..."
+    # 新方法：一次性发布所有文件的行内评论
+    def publish_review(review_data)
+      return if review_data.empty?
 
-      comment_body = <<~MARKDOWN
-        ### 🤖 AI 代码评审建议
-        **文件：** `#{file_path}`
+      # 构造 GitHub 要求的行内评论格式
+      comments = review_data.map do |item|
+        {
+          path: item[:file_path],
+          line: item[:line].to_i,
+          body: "🤖 **AI 建议**：\n\n#{item[:suggestion]}"
+        }
+      end
 
-        #{suggestion}
-
-        ---
-        *由 [AI-Code-Reviewer] 自动生成*
-      MARKDOWN
-
-      # 在 PR 下方发表全局评论
-      @client.add_comment(@repo_name, @pr_number, comment_body)
-      puts "✅ 发布成功！"
+      # 发起一次 PR Review 动作
+      @client.create_pull_request_review(
+        @repo_name,
+        @pr_number,
+        {
+          event: 'COMMENT', # 或者 'REQUEST_CHANGES'
+          comments: comments
+        }
+      )
+      puts "✅ 已成功在 GitHub PR ##{@pr_number} 发布行内评审！"
     rescue => e
-      puts "❌ 发布失败: #{e.message}"
+      puts "❌ 发布行内评审失败: #{e.message}"
     end
   end
 end
