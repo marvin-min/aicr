@@ -8,8 +8,11 @@ require_relative 'ai_code_review/reporter'
 
 module AiCodeReview
   class << self
-    def start(path = '.')
+    def start(path = '.', repo: nil, pr_number: nil)
       puts '🚀 AI Code Review 启动...'
+      puts "📍 目标仓库: #{repo || '未指定'}"
+      puts "📍 PR 编号: #{pr_number || '未指定'}"
+
       analyzer = Analyzer.new(path)
 
       # 1. 自动修复基础格式问题
@@ -25,7 +28,7 @@ module AiCodeReview
 
       # 3. 初始化组件
       ai_client = AiClient.new
-
+      reporter = repo && pr_number ? Reporter.new(repo, pr_number) : nil
       all_review_items = [] # 用于收集所有文件的建议
 
       results.each do |result|
@@ -44,12 +47,13 @@ module AiCodeReview
         }
       end
 
-      # 最后统一发布
-      repo = ENV.fetch('GITHUB_REPOSITORY', nil)
-      pr_id = ENV.fetch('GITHUB_PR_NUMBER', nil)
-      return unless repo && pr_id && !all_review_items.empty?
-
-      Reporter.new(repo, pr_id).publish_review(all_review_items)
+      # 发布结果
+      if reporter && !all_review_items.empty?
+        reporter.publish_review(all_review_items)
+      else
+        puts "\n💡 本地运行结果 (未发送至 GitHub):"
+        all_review_items.each { |item| puts "[#{item[:file_path]}:#{item[:line]}]\n#{item[:suggestion]}" }
+      end
     end
   end
 end
