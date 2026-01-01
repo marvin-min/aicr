@@ -9,3 +9,4 @@ gem 'faraday-retry' # API 重试机制
 gem 'octokit'        # GitHub API
 gem 'rubocop'        # 静态检查
 gem 'zeitwerk'       # 2026 年 Ruby 项目最推荐的代码自动加载器
+gem 'dotenv'
