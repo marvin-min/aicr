@@ -2,51 +2,54 @@
 
 require 'dotenv/load'
 require 'json'
-require 'octokit'
-require 'faraday'
-
-# 加载子模块
 require_relative 'ai_code_review/analyzer'
 require_relative 'ai_code_review/ai_client'
+require_relative 'ai_code_review/reporter'
 
 module AiCodeReview
   class << self
     def start(path = '.')
-      # 1. 运行 RuboCop 分析
+      puts '🚀 AI Code Review 启动...'
       analyzer = Analyzer.new(path)
-      analyzer.run
-      # 第一步：物理修复（直接改文件）
+
+      # 1. 自动修复基础格式问题
       analyzer.fix!
 
-      # 第二步：重新分析修复后还剩下的问题
+      # 2. 扫描剩余的复杂问题
       results = analyzer.run
 
       if results.empty?
-        puts '✅ 完美！没发现需要 AI 介入的代码问题。'
+        puts '✅ 代码非常完美，无需 AI 介入。'
         return
       end
 
-      puts "🔍 发现 #{results.size} 个文件存在改进空间，准备请求 AI 评审..."
-
+      # 3. 初始化组件
       ai_client = AiClient.new
 
+      all_review_items = [] # 用于收集所有文件的建议
+
       results.each do |result|
-        puts "\n📄 文件: #{result[:file_path]}"
+        puts "\n📄 正在分析: #{result[:file_path]}"
 
-        # 打印具体的 RuboCop 发现
-        result[:issues].each do |issue|
-          puts "  📍 行 #{issue[:line]}: [#{issue[:cop_name]}] #{issue[:message]}"
-        end
-
-        puts '🤖 正在请求 AI 深度评审...'
-
-        # 2. 获取 AI 建议
+        # 为了实现行内评论，我们可能需要让 AI 针对每个 issue 给出短建议
+        # 或者直接取第一个 issue 的行号作为锚点
         suggestion = ai_client.get_review_suggestions(result[:file_path], result[:issues])
 
-        puts "\n💡 AI 评审建议："
-        puts '------------------------------------------'
-        puts suggestion
-        puts '------------------------------------------'
+        # 获取该文件第一个问题的行号作为锚点（或者你可以根据 AI 返回细化）
+        line_anchor = result[:issues].first[:line]
+
+        all_review_items << {
+          file_path: result[:file_path],
+          line: line_anchor,
+          suggestion: suggestion
+        }
+      end
+
+      # 最后统一发布
+      repo = ENV['GITHUB_REPOSITORY']
+      pr_id = ENV['GITHUB_PR_NUMBER']
+      if repo && pr_id && !all_review_items.empty?
+        Reporter.new(repo, pr_id).publish_review(all_review_items)
       end
     end
   end
