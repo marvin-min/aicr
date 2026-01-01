@@ -1,52 +1,44 @@
-# frozen_string_literal: true
-
 require 'dotenv/load'
 require 'json'
-require 'octokit'
-require 'faraday'
-
-# 加载子模块
 require_relative 'ai_code_review/analyzer'
 require_relative 'ai_code_review/ai_client'
+require_relative 'ai_code_review/reporter'
 
 module AiCodeReview
   class << self
-    def start(path = '.')
-      # 1. 运行 RuboCop 分析
+    def start(path = ".")
+      puts "🚀 AI Code Review 启动..."
       analyzer = Analyzer.new(path)
-      analyzer.run
-      # 第一步：物理修复（直接改文件）
+
+      # 1. 自动修复基础格式问题
       analyzer.fix!
 
-      # 第二步：重新分析修复后还剩下的问题
+      # 2. 扫描剩余的复杂问题
       results = analyzer.run
 
       if results.empty?
-        puts '✅ 完美！没发现需要 AI 介入的代码问题。'
+        puts "✅ 代码非常完美，无需 AI 介入。"
         return
       end
 
-      puts "🔍 发现 #{results.size} 个文件存在改进空间，准备请求 AI 评审..."
-
+      # 3. 初始化组件
       ai_client = AiClient.new
 
+      # 只有当环境变量存在时才初始化 Reporter
+      repo = ENV['GITHUB_REPOSITORY']
+      pr_id = ENV['GITHUB_PR_NUMBER']
+      reporter = (repo && pr_id) ? Reporter.new(repo, pr_id) : nil
+
+      # 4. 逐个评审
       results.each do |result|
-        puts "\n📄 文件: #{result[:file_path]}"
+        puts "\n📄 正在评审: #{result[:file_path]}"
 
-        # 打印具体的 RuboCop 发现
-        result[:issues].each do |issue|
-          puts "  📍 行 #{issue[:line]}: [#{issue[:cop_name]}] #{issue[:message]}"
-        end
-
-        puts '🤖 正在请求 AI 深度评审...'
-
-        # 2. 获取 AI 建议
         suggestion = ai_client.get_review_suggestions(result[:file_path], result[:issues])
 
-        puts "\n💡 AI 评审建议："
-        puts '------------------------------------------'
-        puts suggestion
-        puts '------------------------------------------'
+        puts "💡 AI 建议：\n#{suggestion}"
+
+        # 5. 发布到 GitHub
+        reporter&.publish(result[:file_path], suggestion)
       end
     end
   end
