@@ -11,18 +11,18 @@ options = {}
 
 # 2. 定义解析规则
 opts = OptionParser.new do |o|
-  o.banner = "用法: ai-code-review [options]"
+  o.banner = '用法: ai-code-review [options]'
 
   # 注意这里的写法：参数名后面跟大写的变量名代表它是必传的
-  o.on("-r", "--repo REPO", "GitHub 仓库名 (例如: marvin-min/aicr)") do |v|
+  o.on('-r', '--repo REPO', 'GitHub 仓库名 (例如: marvin-min/aicr)') do |v|
     options[:repo] = v
   end
 
-  o.on("-p", "--pr PR", "PR 编号") do |v|
+  o.on('-p', '--pr PR', 'PR 编号') do |v|
     options[:pr] = v
   end
 
-  o.on("-h", "--help", "显示帮助") do
+  o.on('-h', '--help', '显示帮助') do
     puts o
     exit
   end
@@ -42,4 +42,4 @@ repo = options[:repo] || ENV['GITHUB_REPOSITORY']
 pr   = options[:pr]   || ENV['GITHUB_PR_NUMBER']
 
 # 5. 启动
-AiCodeReview.start(".", repo: repo, pr_number: pr)
+AiCodeReview.start('.', repo: repo, pr_number: pr)
