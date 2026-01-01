@@ -34,7 +34,6 @@ module AiCodeReview
         # 为了实现行内评论，我们可能需要让 AI 针对每个 issue 给出短建议
         # 或者直接取第一个 issue 的行号作为锚点
         suggestion = ai_client.get_review_suggestions(result[:file_path], result[:issues])
-
         # 获取该文件第一个问题的行号作为锚点（或者你可以根据 AI 返回细化）
         line_anchor = result[:issues].first[:line]
 
@@ -46,11 +45,11 @@ module AiCodeReview
       end
 
       # 最后统一发布
-      repo = ENV['GITHUB_REPOSITORY']
-      pr_id = ENV['GITHUB_PR_NUMBER']
-      if repo && pr_id && !all_review_items.empty?
-        Reporter.new(repo, pr_id).publish_review(all_review_items)
-      end
+      repo = ENV.fetch('GITHUB_REPOSITORY', nil)
+      pr_id = ENV.fetch('GITHUB_PR_NUMBER', nil)
+      return unless repo && pr_id && !all_review_items.empty?
+
+      Reporter.new(repo, pr_id).publish_review(all_review_items)
     end
   end
 end
