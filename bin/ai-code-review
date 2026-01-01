@@ -1,10 +1,45 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'optparse'
 require_relative '../lib/ai_code_review'
 
-# 捕捉中断信号（Ctrl+C）
 trap('SIGINT') { exit! }
 
-puts '🚀 欢迎使用 AI Code Review 助手 (2026 版)'
-AiCodeReview.start
+# 1. 定义一个用于存储参数的 Hash
+options = {}
+
+# 2. 定义解析规则
+opts = OptionParser.new do |o|
+  o.banner = "用法: ai-code-review [options]"
+
+  # 注意这里的写法：参数名后面跟大写的变量名代表它是必传的
+  o.on("-r", "--repo REPO", "GitHub 仓库名 (例如: marvin-min/aicr)") do |v|
+    options[:repo] = v
+  end
+
+  o.on("-p", "--pr PR", "PR 编号") do |v|
+    options[:pr] = v
+  end
+
+  o.on("-h", "--help", "显示帮助") do
+    puts o
+    exit
+  end
+end
+
+# 3. 执行解析 (这一步最关键，必须在调用 options 变量之前)
+begin
+  opts.parse!
+rescue OptionParser::InvalidOption => e
+  puts "❌ 错误: #{e.message}"
+  puts opts
+  exit 1
+end
+
+# 4. 合并参数（优先命令行，其次环境变量）
+repo = options[:repo] || ENV['GITHUB_REPOSITORY']
+pr   = options[:pr]   || ENV['GITHUB_PR_NUMBER']
+
+# 5. 启动
+AiCodeReview.start(".", repo: repo, pr_number: pr)
