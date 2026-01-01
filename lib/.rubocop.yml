@@ -1,0 +1,10 @@
+AllCops:
+  SuggestExtensions: false
+  NewCops: enable
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+  EnforcedStyle: always
+Layout/TrailingEmptyLines:
+  Enabled: true
+  EnforcedStyle: final_newline

@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../lib/ai_code_review'
+
+# 捕捉中断信号（Ctrl+C）
+trap('SIGINT') { exit! }
+
+puts '🚀 欢迎使用 AI Code Review 助手 (2026 版)'
+AiCodeReview.start
