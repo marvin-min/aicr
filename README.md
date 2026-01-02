@@ -145,5 +145,4 @@ end
 5. 开启 Pull Request。
 
 ---
-
-**你想让我为你补充一个具体的 `action.yml` 文件，好让它能直接作为独立的 GitHub Action 发布在 Marketplace 吗？**
+AI GC
