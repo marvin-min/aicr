@@ -36,22 +36,21 @@ module AiCodeReview
 
       # 构造专业的 Prompt
       prompt = <<~PROMPT
-        你是一个资深的 Ruby 开发专家。请审查以下代码中存在的 RuboCop 问题并给出改进建议。
+        你是一个严苛但友好的 Ruby 技术专家。请审查以下代码。
 
-        [文件路径]
-        #{file_path}
+        [上下文信息]
+        文件: #{file_path}
+        RuboCop 发现的问题: #{issues.map { |i| "#{i[:cop_name]}: #{i[:message]}" }.join(', ')}
 
-        [报错信息]
-        #{issues.to_json}
-
-        [源代码]
+        [完整源代码]
         #{code_content}
 
-        [要求]
-        1. 简洁明了地解释为什么这些报错会发生。
-        2. 提供重构后的代码片段。
-        3. 如果有潜在的性能优化空间或 Ruby Best Practice，请一并指出。
-        4. 请使用中文回答。
+        [任务要求]
+        1. 不要只复述 RuboCop 的报错，要解释这个报错在 Ruby 最佳实践中意味着什么。
+        2. 如果发现代码有潜在的性能隐患（比如 N+1 查询、内存泄露）或安全风险，请指出。
+        3. 提供一个“优雅”的重构范例，使用 Ruby 的 Idiomatic 风格。
+        4. 你的回复应该是鼓励性的，并保持简洁。
+        5. 请使用 Markdown 格式，代码部分使用 Ruby 语法高亮。
       PROMPT
 
       response = @conn.post do |req|
