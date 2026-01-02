@@ -19,12 +19,14 @@ module AiCodeReview
       # 1. 运行 RuboCop 分析代码
       analyzer = Analyzer.new(path)
       # 如果你想在 AI 评审前自动修复基础格式问题，可以取消下面一行的注释
-      analyzer.fix!
 
       results = analyzer.run
       if results.empty?
         puts '✅ 太棒了！未发现任何 RuboCop 报错，无需 AI 介入。'
         return
+      else
+        puts "🔧 正在尝试自动修复基础规范问题..."
+        # analyzer.fix!
       end
 
       # --- 新增：如果开启了 skip_ai，展示完结果直接结束 ---
@@ -63,6 +65,8 @@ module AiCodeReview
         publish_remote_report(platform, repo, pr_number, review_items)
       end
     end
+
+    def my_method;end
 
     private
 
