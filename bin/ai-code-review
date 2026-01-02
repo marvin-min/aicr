@@ -14,13 +14,14 @@ end
 options = {
   dry_run: false,
   platform: 'github',
-  skip_ai: false # 默认不跳过
+  skip_ai: false, # 默认不跳过
+  full_review: false
 }
 
 # 1. 解析命令行参数
 OptionParser.new do |opts|
   opts.banner = '🚀 用法: ai-code-review [options]'
-
+  opts.on("-f", "--full", "进行全量评审，而不仅仅是 diff 改动行") { options[:full_review] = true }
   opts.on('-r', '--repo REPO', 'GitHub/GitLab 仓库名') { |v| options[:repo] = v }
   opts.on('-p', '--pr PR', 'PR/MR 编号') { |v| options[:pr] = v }
   opts.on('-d', '--dry-run', '强制进入干跑模式') { options[:dry_run] = true }
