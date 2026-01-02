@@ -8,7 +8,7 @@ module AiCodeReview
   class AiClient
     def initialize
       # 1. 基础配置读取
-      @api_url = ENV['AI_API_URL'] || "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+      @api_url = ENV['AI_API_URL']
       @api_key = ENV['AI_API_KEY']
       @model   = ENV['AI_MODEL_NAME'] || "qwen-max"
 

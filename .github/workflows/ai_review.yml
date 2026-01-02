@@ -31,7 +31,7 @@ jobs:
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_API_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           AI_MODEL_NAME: "qwen-max"
         run: |
           bundle exec ruby bin/ai-code-review \
