@@ -73,7 +73,7 @@ module AiCodeReview
           end
         else
           reporter = Reporter.for(platform, repo, pr_number)
-          reporter.publish(all_suggestions)
+          reporter.publish_review(all_suggestions)
         end
       end
     rescue StandardError => e

@@ -33,7 +33,16 @@ module AiCodeReview
 
     def publish_review(items)
       return if items.nil? || items.empty?
-
+      # 1. 过滤掉 AI 返回 PASS 的项目，以及内容为空的项目
+      valid_items = items.reject do |item|
+        item[:suggestion].nil? ||
+          item[:suggestion].to_s.strip.upcase == 'PASS'
+      end
+      if valid_items.empty?
+        puts "✅ 所有改动均通过 AI 评审，无需发布评论。"
+        return
+      end
+      puts "📢 发现有效建议，正在发布到 #{@platform}..."
       items.each do |item|
         begin
           # 在 PR 的指定行号添加行内评论 (Line Comment)
