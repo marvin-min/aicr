@@ -1,0 +1,39 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize] # 当 PR 开启或有新提交时触发
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # 授予 GitHub Action 写入 PR 评论的权限
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史以确保能对比差异
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3' # 或者你的 Ruby 版本
+          bundler-cache: true # 自动运行 bundle install 并缓存
+
+      - name: Run AI Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动生成的 Token
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}     # 你需要去 GitHub Settings 预设这个
+          AI_API_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          AI_MODEL_NAME: "qwen-max"
+        run: |
+          # 提取当前仓库名和 PR 编号
+          REPO=${{ github.repository }}
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          
+          # 执行你的脚本
+          bundle exec ./bin/ai-code-review --repo "$REPO" --pr "$PR_NUMBER"

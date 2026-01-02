@@ -4,49 +4,78 @@ require 'octokit'
 
 module AiCodeReview
   class Reporter
-    def initialize(repo_name, pr_number)
-      @repo_name = repo_name
-      @pr_number = pr_number.to_i
-      @client = Octokit::Client.new(access_token: ENV.fetch('GITHUB_TOKEN', nil))
+    # 工厂方法：根据平台返回对应的实例
+    def self.for(platform, repo, id)
+      case platform.to_s.downcase
+      when 'github'
+        GitHubReporter.new(repo, id)
+      when 'gitlab'
+        GitLabReporter.new(repo, id)
+      else
+        raise "❌ 不支持的平台: #{platform}"
+      end
     end
+  end
 
-    def publish_review(review_data)
-      return if review_data.empty?
+  # GitHub 发布逻辑
+  class GitHubReporter
+    def initialize(repo, pr_number)
+      @repo = repo
+      @pr_number = pr_number.to_i
+      @token = ENV['GITHUB_TOKEN'] || ENV['AI_REVIEW_TOKEN']
 
-      # 1. 尝试构造行内评论
-      comments = review_data.map do |item|
-        {
-          path: item[:file_path],
-          line: item[:line].to_i,
-          side: 'RIGHT',
-          body: "🤖 **AI 建议**：\n\n#{item[:suggestion]}"
-        }
+      if @token.nil? || @token.empty?
+        raise "❌ 缺少 GITHUB_TOKEN，无法发布评论到 GitHub。"
       end
 
-      begin
-        # 尝试发起正式的 Review
-        @client.create_pull_request_review(@repo_name, @pr_number, {
-                                             event: 'COMMENT',
-                                             comments: comments
-                                           })
-        puts '✅ 行内评审已成功发布！'
-      rescue Octokit::UnprocessableEntity => e
-        # 2. 如果行号不在 Diff 范围内，触发降级方案
-        puts '⚠️ 部分行号不在 PR 改动范围内，正在汇总发表全局评论...'
-        publish_summary_comment(review_data)
+      @client = Octokit::Client.new(access_token: @token)
+    end
+
+    def publish_review(items)
+      return if items.nil? || items.empty?
+
+      items.each do |item|
+        begin
+          # 在 PR 的指定行号添加行内评论 (Line Comment)
+          @client.create_pull_request_comment(
+            @repo,
+            @pr_number,
+            "[🤖 AI Review]\n\n#{item[:suggestion]}",
+            @client.pull_request(@repo, @pr_number).head.sha,
+            item[:file_path],
+            item[:line]
+          )
+        rescue Octokit::UnprocessableEntity => e
+          # 如果报错位置不在 Diff 中，GitHub 会抛出 422 错误
+          # 此时我们可以选择降级，发布一条全局评论
+          puts "⚠️ 无法在 #{item[:file_path]}:#{item[:line]} 处发布行内评论（可能超出了 PR 改动范围）。"
+          publish_fallback_comment(item)
+        rescue StandardError => e
+          puts "❌ 发布到 GitHub 失败: #{e.message}"
+        end
       end
     end
 
     private
 
-    def publish_summary_comment(review_data)
-      summary = review_data.map do |item|
-        "### 📄 文件: `#{item[:file_path]}` (第 #{item[:line]} 行)\n#{item[:suggestion]}"
-      end.join("\n\n---\n\n")
+    # 降级方案：如果行内评论发不出，就发普通评论
+    def publish_fallback_comment(item)
+      body = "### 🤖 AI 补充建议\n**文件**: #{item[:file_path]}\n**建议**: #{item[:suggestion]}"
+      @client.add_comment(@repo, @pr_number, body)
+    end
+  end
 
-      header = "### 🤖 AI 代码评审报告\n> 提示：部分建议涉及未改动的上下文行，已汇总至此。\n\n"
-      @client.add_comment(@repo_name, @pr_number, header + summary)
-      puts '✅ 全局汇总评论已发布！'
+  # GitLab 发布逻辑 (预留扩展)
+  class GitLabReporter
+    def initialize(repo, mr_id)
+      @repo = repo
+      @mr_id = mr_id
+      # 这里可以集成 gitlab gem
+    end
+
+    def publish_review(items)
+      puts "🛠 GitLab 发布功能正在开发中..."
+      items.each { |i| puts "本地预览 [GitLab]: #{i[:suggestion]}" }
     end
   end
 end

@@ -1,93 +1,125 @@
 # frozen_string_literal: true
 
-require 'faraday'
-require 'faraday/retry'
+require 'net/http'
 require 'json'
+require 'uri'
 
 module AiCodeReview
   class AiClient
     def initialize
-      # 动态读取环境变量，默认为 DashScope
-      @api_url = ENV.fetch('AI_API_URL', '').strip
-      @api_key = ENV.fetch('AI_API_KEY', '').strip
-      @model   = ENV.fetch('AI_MODEL_NAME', '').strip
-      raise 'AI_API_URL configuration is missing' if @api_url == ''
-      raise 'AI_MODEL_NAME is missing' if @model.strip == ''
-      raise 'AI_API_KEY is missing' if @api_key.strip == ''
-      raise '\r\n无法调用AI专业建议' if @api_url == '' || @api_key == '' || @model == ''
+      # 1. 基础配置读取
+      @api_url = ENV['AI_API_URL']
+      @api_key = ENV['AI_API_KEY']
+      @model   = ENV['AI_MODEL_NAME'] || "qwen-max"
 
-      @conn = Faraday.new(url: @api_url) do |f|
-        f.request :json
-        f.response :json
+      if @api_key.nil? || @api_key.empty?
+        raise "❌ 环境变量 AI_API_KEY 未设置，请在 GitHub Secrets 中配置。"
+      end
 
-        # 增加重试机制，应对网络波动
-        f.request :retry, max: 2, interval: 0.5
+      # 2. 稳健的 URI 解析
+      # 使用 strip 去除可能存在的首尾空格，防止 URI 解析失败
+      begin
+        @uri = URI(@api_url.strip)
+      rescue URI::InvalidURIError => e
+        raise "❌ 无法解析 AI_API_URL: #{e.message}。请检查地址是否包含 http(s)://。"
+      end
 
-        # 增加超时设置，因为 AI 思考代码需要时间
-        f.options.timeout = 60
-        f.options.open_timeout = 10
-
-        f.adapter Faraday.default_adapter
+      unless @uri.is_a?(URI::HTTP) || @uri.is_a?(URI::HTTPS)
+        raise "❌ 无效的 API URL 格式 (#{@uri.class}): #{@api_url}。必须以 https:// 或 http:// 开头。"
       end
     end
 
-    def get_review_suggestions(file_path, issues)
-      code_content = File.read(file_path)
+    # 针对改动行进行精准评审
+    def get_diff_review(file_path, content, changed_lines, static_issues = [])
+      # 格式化 RuboCop 问题供 AI 参考
+      issues_context = if static_issues.empty?
+                         "未发现基础规范问题。"
+                       else
+                         static_issues.map { |i| "- [第 #{i[:line]} 行] #{i[:cop_name]}: #{i[:message]}" }.join("\n")
+                       end
 
-      # 构造专业的 Prompt
       prompt = <<~PROMPT
-        你是一个资深的 Ruby 开发专家。请审查以下代码中存在的 RuboCop 问题并给出改进建议。
+        你是一个严谨的 Ruby 代码评审专家。
+        
+        【背景】
+        文件: #{file_path}
+        改动行号: #{changed_lines.join(', ')}
+        
+        【参考 RuboCop 报错】
+        #{issues_context}
+        
+        【任务】
+        1. 仅审阅上述【改动行号】内的代码。
+        2. 忽略未改动的陈旧代码。
+        3. 重点关注：逻辑漏洞、性能隐患、代码可读性。
+        4. 如果改动行质量合格，请直接回复 "PASS"，不要有任何废话。
+        5. 否则，请给出精炼的改进建议和重构示例。
 
-        [文件路径]
-        #{file_path}
-
-        [报错信息]
-        #{issues.to_json}
-
-        [源代码]
-        #{code_content}
-
-        [要求]
-        1. 简洁明了地解释为什么这些报错会发生。
-        2. 提供重构后的代码片段。
-        3. 如果有潜在的性能优化空间或 Ruby Best Practice，请一并指出。
-        4. 请使用中文回答。
+        【代码全文】
+        #{content}
       PROMPT
 
-      response = @conn.post do |req|
-        req.headers['Authorization'] = "Bearer #{@api_key}"
-        req.body = {
-          model: @model,
-          messages: [
-            { role: 'system', content: '你是一个专业的代码评审助手。' },
-            { role: 'user', content: prompt }
-          ],
-          temperature: 0.3 # 较低的随机性，保证建议的稳定性
-        }
-      end
-
-      extract_suggestion(response)
-    rescue StandardError => e
-      "❌ AI 客户端发生异常: #{e.message}"
+      call_ai_api(prompt)
     end
 
     private
 
-    def extract_suggestion(response)
-      if response.success?
-        # 自动兼容标准的 OpenAI 响应格式
-        content = response.body.dig('choices', 0, 'message', 'content')
-        return content if content && !content.empty?
+    def call_ai_api(prompt)
+      # 确保路径正确，避免 request_uri 在 Generic 对象上报错
+      path = @uri.path.empty? ? "/" : @uri.request_uri
 
-        '⚠️ AI 返回了空结果，请检查模型配置。'
-      else
-        # 错误处理：解析 API 返回的报错详情
-        error_info = response.body.is_a?(Hash) ? (response.body['error'] || response.body['errors']) : nil
-        error_msg = error_info.is_a?(Hash) ? error_info['message'] : response.body
+      header = {
+        'Content-Type' => 'application/json',
+        'Authorization' => "Bearer #{@api_key}"
+      }
 
-        puts "❌ API 调用失败 (状态码: #{response.status})"
-        puts "详情: #{error_msg}"
-        "AI 评审暂时不可用 (错误码: #{response.status})"
+      body = {
+        model: @model,
+        messages: [
+          { role: 'system', content: 'You are a professional Ruby reviewer who provides concise and actionable feedback.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1 # 极低随机性，确保评审结果稳定
+      }
+
+      http = Net::HTTP.new(@uri.host, @uri.port)
+      http.use_ssl = (@uri.scheme == 'https')
+
+      # --- 关键：解决 ReadTimeout 的配置 ---
+      http.open_timeout = 30   # 连接超时 (秒)
+      http.read_timeout = 180  # 读取响应超时 (增加到 3 分钟，应对复杂逻辑分析)
+      # ----------------------------------
+
+      max_retries = 2
+      attempt = 0
+
+      begin
+        attempt += 1
+        request = Net::HTTP::Post.new(path, header)
+        request.body = body.to_json
+
+        response = http.request(request)
+
+        if response.code == '200'
+          result = JSON.parse(response.body)
+          content = result.dig('choices', 0, 'message', 'content')
+          # AI 觉得没问题则返回 nil，不发布评论
+          content.to_s.strip.upcase == 'PASS' ? nil : content
+        else
+          puts "❌ API 业务错误 (Code: #{response.code}): #{response.body}"
+          nil
+        end
+      rescue Net::ReadTimeout, Net::OpenTimeout => e
+        if attempt <= max_retries
+          puts "⚠️ AI 响应超时，正在进行第 #{attempt} 次重试..."
+          retry
+        else
+          puts "❌ AI 服务响应超时：服务器在 180 秒内未返回结果，已停止重试。"
+          nil
+        end
+      rescue StandardError => e
+        puts "❌ AI 服务连接异常: #{e.message}"
+        nil
       end
     end
   end
