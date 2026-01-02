@@ -1,4 +1,3 @@
-#!/usr/bin/env ruby
 # frozen_string_literal: true
 
 require_relative 'ai_code_review/analyzer'
@@ -8,110 +7,113 @@ require_relative 'ai_code_review/reporter'
 module AiCodeReview
   class << self
     # 主入口方法
-    # @param path [String] 项目路径
-    # @param repo [String] 仓库名 (user/repo)
-    # @param pr_number [Integer/String] PR 编号
-    # @param dry_run [Boolean] 是否为干跑模式
-    # @param platform [String] 平台类型 (github/gitlab)
     def start(path = '.', repo: nil, pr_number: nil, dry_run: false, platform: 'github', skip_ai: false)
-      puts '🔍 正在启动代码扫描...'
+      puts '🔍 正在分析 Git Diff 改动内容...'
 
-      # 1. 运行 RuboCop 分析代码
+      # 1. 获取本次改动的文件及其行号 (基于 Git)
+      # 这里默认对比 HEAD~1，在 CI 环境下可以根据环境变量调整对比分支
+      changes = get_diff_changes(path)
+
+      if changes.empty?
+        puts '✅ 未检测到 Ruby 代码改动，任务结束。'
+        return
+      end
+
+      # 2. 运行 RuboCop 获取静态分析参考
+      # 虽然我们看全文，但 RuboCop 的报错能帮 AI 快速锁定低级错误
       analyzer = Analyzer.new(path)
-      # 如果你想在 AI 评审前自动修复基础格式问题，可以取消下面一行的注释
+      static_results = analyzer.run
 
-      results = analyzer.run
-      if results.empty?
-        puts '✅ 太棒了！未发现任何 RuboCop 报错，无需 AI 介入。'
-        return
-      else
-        puts "🔧 正在尝试自动修复基础规范问题..."
-        # analyzer.fix!
-      end
-
-      # --- 新增：如果开启了 skip_ai，展示完结果直接结束 ---
       if skip_ai
-        puts '⚠️  已开启 --skip-ai，跳过 AI 分析步骤。'
-        render_static_report(results)
+        puts '⚠️ 已开启 --skip-ai，仅展示静态扫描结果：'
+        render_static_report(static_results)
         return
       end
-      # -----------------------------------------------
 
-      puts "🤖 正在连接 AI 获取评审建议 (模型: #{ENV.fetch('AI_MODEL_NAME', nil)})..."
+      puts "🤖 正在为 #{changes.keys.size} 个改动文件生成 AI 评审建议..."
       ai_client = AiClient.new
       review_items = []
 
-      # 2. 遍历分析结果，逐个获取 AI 建议
-      results.each do |result|
-        file_path = result[:file_path]
-        issues = result[:issues]
+      # 3. 遍历改动的文件进行精准评审
+      changes.each do |file_path, changed_lines|
+        next unless File.exist?(file_path)
 
-        # 调用 AI 客户端
-        suggestion = ai_client.get_review_suggestions(file_path, issues)
+        puts "  - 正在分析: #{file_path} (改动行: #{changed_lines.join(', ')})"
 
-        # 记录评审数据
-        review_items << {
-          file_path: file_path,
-          line: issues.first[:line], # 默认贴在第一个报错行
-          suggestion: suggestion
-        }
-        puts "  - 已完成分析: #{file_path}"
+        file_content = File.read(file_path)
+        # 提取该文件相关的 RuboCop 问题
+        file_issues = static_results.find { |r| r[:file_path] == file_path }&.fetch(:issues, []) || []
+
+        # 调用 AI 获取评审（传入全文、改动行号、以及静态分析参考）
+        suggestion = ai_client.get_diff_review(file_path, file_content, changed_lines, file_issues)
+
+        if suggestion && !suggestion.strip.empty?
+          review_items << {
+            file_path: file_path,
+            line: changed_lines.first, # 建议贴在改动的第一行
+            suggestion: suggestion
+          }
+        end
       end
 
-      # 3. 根据模式决定输出去向
-      if dry_run
+      # 4. 发布报告
+      if review_items.empty?
+        puts 'System: AI 未发现需要人工介入的逻辑问题。'
+      elsif dry_run
         render_local_report(review_items)
       else
         publish_remote_report(platform, repo, pr_number, review_items)
       end
     end
 
-    def my_method;end
-
     private
 
-    # 新增一个专门展示静态分析结果的方法
-    def render_static_report(results)
-      puts "\n#{'═' * 60}"
-      puts '📊 静态分析报告 (仅 RuboCop)'
-      puts '═' * 60
-      results.each do |result|
-        puts "\n📁 文件: #{result[:file_path]}"
-        result[:issues].each do |issue|
-          puts "  [第 #{issue[:line]} 行] #{issue[:cop_name]}: #{issue[:message]}"
+    # 解析 Git Diff 提取改动的文件名和具体行号
+    def get_diff_changes(path)
+      changes = {}
+      # unified=0 确保只输出改动行，不带上下文，方便解析
+      # HEAD~1 是针对本地最近一次 commit，CI 环境下可改为 origin/main...HEAD
+      raw_diff = `git -C #{path} diff HEAD~1 --unified=0`.force_encoding('UTF-8')
+
+      current_file = nil
+      raw_diff.each_line do |line|
+        if line.start_with?('+++ b/')
+          current_file = line.sub('+++ b/', '').strip
+          changes[current_file] = [] if current_file.end_with?('.rb')
+        elsif line.start_with?('@@') && current_file&.end_with?('.rb')
+          # 解析 @@ -10,4 +12,6 @@ 这种格式，提取 + 后面新代码的起始行和长度
+          if (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
+            start_line = match[1].to_i
+            count = (match[2] || 1).to_i
+            # 将改动的行号存入数组 (例如 [12, 13, 14, 15, 16, 17])
+            count.times { |i| changes[current_file] << (start_line + i) }
+          end
         end
       end
-      puts "\n#{'═' * 60}"
+      changes.delete_if { |_, lines| lines.empty? }
+      changes
     end
 
-    # 在终端打印美化的评审报告
-    def render_local_report(items)
-      puts "\n#{'═' * 60}"
-      puts '🧪 [DRY RUN] 评审结果预览'
-      puts '═' * 60
-
-      items.each_with_index do |item, index|
-        puts "\n[#{index + 1}] 📍 路径: #{item[:file_path]} (第 #{item[:line]} 行附近)"
-        puts '─' * 40
-        puts item[:suggestion]
-        puts '─' * 40
+    def render_static_report(results)
+      results.each do |result|
+        puts "\n📁 文件: #{result[:file_path]}"
+        result[:issues].each { |i| puts "  [L#{i[:line]}] #{i[:message]}" }
       end
-
-      puts "\n✨ 本地预览结束。如需发布到 PR，请确保提供了仓库名和 PR 编号。"
     end
 
-    # 发布到远程平台 (GitHub/GitLab)
-    def publish_remote_report(platform, repo, pr_number, items)
-      puts "📡 正在同步评审建议到 #{platform.capitalize}..."
+    def render_local_report(items)
+      puts "\n#{"═" * 60}\n🧪 [DRY RUN] AI 深度评审结果\n#{"═" * 60}"
+      items.each do |item|
+        puts "\n📍 #{item[:file_path]} (第 #{item[:line]} 行起)\n#{'─' * 40}\n#{item[:suggestion]}\n"
+      end
+    end
 
-      # 昨天我们讨论了 Reporter 的工厂模式
+    def publish_remote_report(platform, repo, pr_number, items)
       reporter = Reporter.for(platform, repo, pr_number)
       reporter.publish_review(items)
-
-      puts "🎉 评审已成功发布到 #{repo} ##{pr_number}！"
+      puts "🎉 评审已成功发布到 #{platform}！"
     rescue StandardError => e
       puts "❌ 发布失败: #{e.message}"
-      # 如果远程发布失败，作为保底，把内容打在屏幕上
       render_local_report(items)
     end
   end
