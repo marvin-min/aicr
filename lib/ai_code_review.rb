@@ -128,11 +128,28 @@ module AiCodeReview
       if suggestions.empty?
         puts "\n--- 评审摘要 ---"
         puts "🎉 非常棒！AI 没有发现明显的逻辑缺陷。"
-      elsif dry_run
+        return
+      end
+
+      if dry_run
         puts "\n--- 评审摘要 ---"
         suggestions.each { |s| puts "\n📍 [#{s[:file_path]}:#{s[:line]}]\n#{s[:suggestion]}" }
+        puts "\n💡 提示: 当前为 [Dry Run] 模式，建议未同步至 GitHub。"
       else
-        # 实际同步到 GitHub 的逻辑（此处省略，保持之前版本即可）
+        # 🚀 关键：在这里把接力棒交给 Reporter 类
+        puts "\n🚀 准备发布评审结果到 #{platform}..."
+
+        begin
+          # 使用我们之前定义的工厂方法实例化
+          reporter = AiCodeReview::Reporter.for(platform, repo, pr_number)
+
+          # 执行发布逻辑
+          reporter.publish_review(suggestions)
+        rescue => e
+          puts "❌ 发布报告时出错: #{e.message}"
+          # 发生错误时，降级打印到控制台，确保建议不丢失
+          suggestions.each { |s| puts "\n📍 [#{s[:file_path]}:#{s[:line]}]\n#{s[:suggestion]}" }
+        end
       end
     end
   end

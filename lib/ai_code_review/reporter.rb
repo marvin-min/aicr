@@ -48,7 +48,7 @@ class GitHubReporter
       end
     end
   end
-  
+
   private
 
   def publish_fallback_comment(item)
