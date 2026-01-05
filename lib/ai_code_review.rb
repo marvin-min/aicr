@@ -86,8 +86,8 @@ module AiCodeReview
 
     def get_ruby_diff_changes(full: false)
       changes = {}
-      base = ENV.fetch('GITHUB_BASE_REF', 'HEAD~1')
-      base = "origin/#{base}" if ENV['GITHUB_BASE_REF']
+      base = ENV.fetch('TARGET_BRANCH', 'master')
+      base = "origin/#{base}"
 
       stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", "#{base}...HEAD")
       return {} unless status.success?
