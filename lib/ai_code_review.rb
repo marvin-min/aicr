@@ -83,47 +83,39 @@ module AiCodeReview
       base_lines = is_full ? (1..file_lines.size).to_a : changed_lines
       base_lines - ignored_line_numbers
     end
-
     def get_ruby_diff_changes(full: false)
       changes = {}
-      # 1. 获取目标分支名，去掉可能存在的 origin/ 前缀（防止重复）
       target = ENV.fetch('TARGET_BRANCH', 'master').gsub(/^origin\//, '')
-
-      # 2. 检查是否在 CI 环境
       is_ci = ENV.include?('GITHUB_ACTIONS')
 
-      # 3. 确定基准
-      # CI 模式下强制用 origin/，本地模式下先尝试 origin/，失败则用本地分支
+      # 1. 确定基准引用
       base_ref = is_ci ? "origin/#{target}" : (system("git rev-parse --verify origin/#{target} >/dev/null 2>&1") ? "origin/#{target}" : target)
 
-      # 4. 获取分叉点 (Merge Base)
+      # 2. 获取分叉点
       merge_base = `git merge-base #{base_ref} HEAD`.strip
       merge_base = "HEAD~1" if merge_base.empty?
 
-      # 5. 执行对比
-      # 注意：去掉 ...HEAD，直接 diff merge_base。
-      # 这样不仅能抓到已 commit 的，还能抓到你本地正在改但还没 commit 的代码！
+      # 3. 获取文件列表
       stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", merge_base)
-
-      puts "🔍 正在对比基准 [#{merge_base}] 与当前工作区..."
       return {} unless status.success?
 
-      # files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
       files = stdout.split("\n").select do |f|
-        # 只评审 Ruby 文件
         is_ruby = f.end_with?('.rb', '.rake') || f == 'Gemfile'
-
-        # 排除掉测试代码或自动生成的代码（可选）
         is_not_spec = !f.include?('spec/') && !f.include?('test/')
         is_not_schema = f != 'db/schema.rb'
-
         is_ruby && is_not_spec && is_not_schema
       end
+
+      puts "🔍 正在对比基准 [#{merge_base}] 与当前工作区的差异..."
+
       files.each do |file|
         if full
-          changes[file] = [] # 全量模式逻辑交由 filter_ignored_lines 处理
+          # 全量模式：标记为空数组，filter_ignored_lines 会将其识别为“全文件”
+          changes[file] = []
         else
-          diff_out, _, diff_stat = Open3.capture3("git", "diff", "--unified=0", "#{base}...HEAD", file)
+          # ✅ 修复点：将 base 改为 merge_base，并去掉 ...HEAD 以支持未提交代码
+          diff_out, _, diff_stat = Open3.capture3("git", "diff", "--unified=0", merge_base, file)
+
           if diff_stat.success?
             lines = []
             diff_out.each_line do |line|
@@ -139,6 +131,61 @@ module AiCodeReview
       end
       changes
     end
+    # def get_ruby_diff_changes(full: false)
+    #   changes = {}
+    #   # 1. 获取目标分支名，去掉可能存在的 origin/ 前缀（防止重复）
+    #   target = ENV.fetch('TARGET_BRANCH', 'master').gsub(/^origin\//, '')
+    #
+    #   # 2. 检查是否在 CI 环境
+    #   is_ci = ENV.include?('GITHUB_ACTIONS')
+    #
+    #   # 3. 确定基准
+    #   # CI 模式下强制用 origin/，本地模式下先尝试 origin/，失败则用本地分支
+    #   base_ref = is_ci ? "origin/#{target}" : (system("git rev-parse --verify origin/#{target} >/dev/null 2>&1") ? "origin/#{target}" : target)
+    #
+    #   # 4. 获取分叉点 (Merge Base)
+    #   merge_base = `git merge-base #{base_ref} HEAD`.strip
+    #   merge_base = "HEAD~1" if merge_base.empty?
+    #
+    #   # 5. 执行对比
+    #   # 注意：去掉 ...HEAD，直接 diff merge_base。
+    #   # 这样不仅能抓到已 commit 的，还能抓到你本地正在改但还没 commit 的代码！
+    #   stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", merge_base)
+    #
+    #   puts "🔍 正在对比基准 [#{merge_base}] 与当前工作区..."
+    #   return {} unless status.success?
+    #
+    #   # files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
+    #   files = stdout.split("\n").select do |f|
+    #     # 只评审 Ruby 文件
+    #     is_ruby = f.end_with?('.rb', '.rake') || f == 'Gemfile'
+    #
+    #     # 排除掉测试代码或自动生成的代码（可选）
+    #     is_not_spec = !f.include?('spec/') && !f.include?('test/')
+    #     is_not_schema = f != 'db/schema.rb'
+    #
+    #     is_ruby && is_not_spec && is_not_schema
+    #   end
+    #   files.each do |file|
+    #     if full
+    #       changes[file] = [] # 全量模式逻辑交由 filter_ignored_lines 处理
+    #     else
+    #       diff_out, _, diff_stat = Open3.capture3("git", "diff", "--unified=0", "#{merge_base}...HEAD", file)
+    #       if diff_stat.success?
+    #         lines = []
+    #         diff_out.each_line do |line|
+    #           if (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
+    #             start_line = match[1].to_i
+    #             count = (match[2] || 1).to_i
+    #             (start_line...start_line + count).each { |i| lines << i }
+    #           end
+    #         end
+    #         changes[file] = lines unless lines.empty?
+    #       end
+    #     end
+    #   end
+    #   changes
+    # end
 
     def handle_report(suggestions, dry_run, platform, repo, pr_number)
       if suggestions.empty?
