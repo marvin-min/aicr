@@ -12,6 +12,7 @@ module AiCodeReview
       env_url = ENV['AI_API_URL']
       @api_url = (env_url && !env_url.strip.empty?) ? env_url.strip : DEFAULT_API_URL
       @api_key = ENV['AI_API_KEY']
+      # 保持你原有的默认模型 Qwen
       @model   = ENV['AI_MODEL_NAME'] || "qwen-max"
 
       raise "❌ AI_API_KEY 未设置" if @api_key.nil? || @api_key.strip.empty?
@@ -22,19 +23,42 @@ module AiCodeReview
       end
     end
 
-    def get_review(file_path:, content:, lines:, static_issues: [], is_full: false)
-      issues_context = static_issues.empty? ? "无" : static_issues.map { |i| "- [L#{i[:line]}] #{i[:message]}" }.join("\n")
+    # 核心功能优化：移除 static_issues，注入专业评审维度
+    def get_review(file_path:, content:, lines:, is_full: false)
+      scope_instruction = is_full ? "全量评审该文件内容。" : "仅重点评审改动行（行号：#{lines.join(', ')}）。"
 
-      task_instruction = is_full ? "请全量评审该文件。" : "仅审阅改动行: #{lines.join(', ')}。"
-
+      # 整合专业 Prompt 模板
       prompt = <<~PROMPT
-        你是一个严谨的 Ruby 代码评审专家。
-        文件: #{file_path}
-        任务: #{task_instruction}
-        参考静态扫描: #{issues_context}
-        要求: 若代码合格回复 "PASS"，否则给出改进建议和重构示例。
-        代码全文:
+        ### Role
+        你是一位拥有 10 年经验的资深 Ruby/Rails 专家，正在进行代码评审。
+
+        ### Context
+        - 文件路径: #{file_path}
+        - 评审范围: #{scope_instruction}
+
+        ### Review Dimensions (优先级排序)
+        1. **Security & Performance**: 检查 SQL 注入、越权风险、N+1 查询、内存溢出或慢查询。
+        2. **Business Logic**: 检查边界条件（nil 处理）、逻辑漏洞。
+        3. **Maintainability**: 检查复杂的嵌套、过长的方法、硬编码。
+        4. **Code Style**: 仅指出严重违反 Ruby 惯例的命名或风格。
+
+        ### Rules
+        - 如果代码表现完美，**必须仅回复 "PASS"**。
+        - 否则，请指出问题并给出**优化后的代码示例**。
+        - 忽略琐碎的空格、引号等格式问题。
+
+        ### 代码内容:
         #{content}
+
+        ### Output Format (如果有建议)
+        #### 🛡️ 安全与性能 (Critical)
+        - [描述]
+        - ```ruby [建议代码] ```
+        #### 🧠 逻辑与架构 (Logic)
+        - [描述]
+        ---
+        #### 💡 综合评价
+        [一句话总结]
       PROMPT
 
       call_ai_api(prompt)
@@ -55,13 +79,17 @@ module AiCodeReview
       request.body = {
         model: @model,
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1
+        temperature: 0.1 # 保持低随机性
       }.to_json
 
       response = http.request(request)
       if response.code == '200'
         content = JSON.parse(response.body).dig('choices', 0, 'message', 'content')
+        # 兼容处理：只有明确回复 PASS 才跳过，否则返回建议
         content.to_s.strip.upcase == 'PASS' ? nil : content
+      else
+        puts "⚠️ API 返回错误: #{response.code} - #{response.body}"
+        nil
       end
     rescue => e
       puts "⚠️ AI 调用异常: #{e.message}"
