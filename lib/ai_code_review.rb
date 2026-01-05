@@ -86,10 +86,26 @@ module AiCodeReview
 
     def get_ruby_diff_changes(full: false)
       changes = {}
-      base = ENV.fetch('TARGET_BRANCH', 'master')
-      base = "origin/#{base}"
+      # 1. 获取目标分支名，去掉可能存在的 origin/ 前缀（防止重复）
+      target = ENV.fetch('TARGET_BRANCH', 'master').gsub(/^origin\//, '')
 
-      stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", "#{base}...HEAD")
+      # 2. 检查是否在 CI 环境
+      is_ci = ENV.include?('GITHUB_ACTIONS')
+
+      # 3. 确定基准
+      # CI 模式下强制用 origin/，本地模式下先尝试 origin/，失败则用本地分支
+      base_ref = is_ci ? "origin/#{target}" : (system("git rev-parse --verify origin/#{target} >/dev/null 2>&1") ? "origin/#{target}" : target)
+
+      # 4. 获取分叉点 (Merge Base)
+      merge_base = `git merge-base #{base_ref} HEAD`.strip
+      merge_base = "HEAD~1" if merge_base.empty?
+
+      # 5. 执行对比
+      # 注意：去掉 ...HEAD，直接 diff merge_base。
+      # 这样不仅能抓到已 commit 的，还能抓到你本地正在改但还没 commit 的代码！
+      stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", merge_base)
+
+      puts "🔍 正在对比基准 [#{merge_base}] 与当前工作区..."
       return {} unless status.success?
 
       # files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
