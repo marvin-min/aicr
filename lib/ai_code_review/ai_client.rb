@@ -3,106 +3,86 @@
 require 'net/http'
 require 'json'
 require 'uri'
-require 'cgi'
-require 'openssl'
 
 module AiCodeReview
   class AiClient
     DEFAULT_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
+    # 1. 专业的全维度 Template，强制要求无发现不准回复
     PROMPT_TEMPLATE = <<~PROMPT
       ### Role
-      你是一位拥有 10 年经验的资深 Ruby on Rails 架构师。
+      你是一位追求极致品质的资深 Ruby on Rails 架构师。
 
-      ### Context
-      - 文件路径: %{file_path}
-      - 评审范围: %{scope}
+      ### Task
+      请对下方提供的 Ruby 代码进行深度评审。
+      评审维度：1.安全隐患 2.逻辑缺陷 3.命名规范 4.Rails 最佳实践。
 
-      ### Rules
-      - 无隐患则仅回复 "PASS"。
-      - 必须提供具体的优化建议代码。
+      ### Strict Rules (自动化准则)
+      - **如果没有发现任何需要改进的点，请不要回复任何字符（严禁回复 PASS 或请求代码）。**
+      - 只有在确定存在优化空间时，才按照下方格式输出。
+      - 忽略琐碎的空格、引号等格式问题。
 
-      ### 待评审代码内容:
+      ### Source Code to Review
+      File: %{file_path}
+      Scope: %{scope}
+      [CODE_START]
       %{content}
+      [CODE_END]
+
+      ### Output Format (仅在有建议时)
+      #### 🛠️ [类别]
+      - **Issue**: [精准描述]
+      - **Fix**:
+      ```ruby
+      [建议代码]
+      ```
     PROMPT
 
     def initialize
-      # 采纳建议：环境变量 strip 处理
       env_url = ENV['AI_API_URL']&.strip || DEFAULT_API_URL
-      @uri = parse_url(env_url)
-
+      @uri = URI.parse(env_url.start_with?('http') ? env_url : "https://#{env_url}")
       @api_key = ENV['AI_API_KEY']&.strip
-      @model   = ENV['AI_MODEL_NAME']&.strip || "qwen-max"
+      @model   = ENV['AI_MODEL_NAME'] || "qwen-max"
 
       raise "❌ AI_API_KEY 未设置" if @api_key.nil? || @api_key.empty?
     end
 
     def get_review(file_path:, content:, lines:, is_full: false)
       scope = is_full ? "全量评审" : "改动行: #{lines.join(', ')}"
-      # 采纳建议：对元数据进行转义处理，防止 Prompt 注入
-      prompt = PROMPT_TEMPLATE % {
-        file_path: CGI.escapeHTML(file_path),
-        scope: CGI.escapeHTML(scope),
-        content: content # 保持代码原文以利于 AI 理解逻辑
-      }
+      prompt = PROMPT_TEMPLATE % { file_path: file_path, scope: scope, content: content }
       call_ai_api(prompt)
     end
 
     private
 
-    def parse_url(url)
-      parsed = URI.parse(url)
-      return parsed if parsed.is_a?(URI::HTTP) || parsed.is_a?(URI::HTTPS)
-      URI.parse("https://#{url}")
-    rescue URI::InvalidURIError
-      raise "❌ 无效的 AI_API_URL: #{url}"
-    end
-
     def call_ai_api(prompt)
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = (@uri.scheme == 'https')
-
-      # 采纳建议：SSL 安全加固
-      http.verify_mode = OpenSSL::SSL::VERIFY_PEER if http.use_ssl?
-
       http.read_timeout = 120
-      http.open_timeout = 30
 
       request = Net::HTTP::Post.new(@uri.request_uri, {
         'Content-Type' => 'application/json',
         'Authorization' => "Bearer #{@api_key}"
       })
-
-      request.body = {
-        model: @model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1
-      }.to_json
+      request.body = { model: @model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 }.to_json
 
       begin
         response = http.request(request)
-        handle_response(response)
-      rescue Timeout::Error, Errno::ECONNRESET, EOFError, Net::ProtocolError, OpenSSL::SSL::SSLError => e
-        puts "⚠️ 通讯失败: #{e.message}"
-        nil
-      rescue StandardError => e
-        puts "⚠️ 未知错误: #{e.message}"
-        nil
-      end
-    end
+        return nil unless response.code == '200'
 
-    def handle_response(response)
-      if response.code == '200'
-        res_body = JSON.parse(response.body)
-        content = res_body.dig('choices', 0, 'message', 'content')
-        (content.nil? || content.strip.upcase == 'PASS') ? nil : content
-      else
-        puts "⚠️ API 错误: #{response.code} - #{response.message}"
+        content = JSON.parse(response.body).dig('choices', 0, 'message', 'content')&.strip
+
+        # --- 极致自动化拦截逻辑 ---
+        # 1. 如果为空或包含 PASS，直接静默
+        return nil if content.nil? || content.empty? || content.upcase.include?("PASS")
+
+        # 2. 如果回复中没有结构化的标题（####），说明 AI 在闲聊或问问题，直接静默
+        return nil unless content.include?("####")
+
+        content
+      rescue StandardError
         nil
       end
-    rescue JSON::ParserError
-      puts "⚠️ API 返回了无效的 JSON"
-      nil
     end
   end
 end
