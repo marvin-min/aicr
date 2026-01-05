@@ -92,7 +92,17 @@ module AiCodeReview
       stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", "#{base}...HEAD")
       return {} unless status.success?
 
-      files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
+      # files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
+      files = stdout.split("\n").select do |f|
+        # 只评审 Ruby 文件
+        is_ruby = f.end_with?('.rb', '.rake') || f == 'Gemfile'
+
+        # 排除掉测试代码或自动生成的代码（可选）
+        is_not_spec = !f.include?('spec/') && !f.include?('test/')
+        is_not_schema = f != 'db/schema.rb'
+
+        is_ruby && is_not_spec && is_not_schema
+      end
       files.each do |file|
         if full
           changes[file] = [] # 全量模式逻辑交由 filter_ignored_lines 处理
