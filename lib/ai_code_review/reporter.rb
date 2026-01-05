@@ -10,43 +10,45 @@ class GitHubReporter
   end
 
   def publish_review(items)
-    return if items.nil? || items.empty?
+    # 打印收到的原始数据量，确认 AI 确实给东西了
+    puts "DEBUG: 收到 AI 建议共 #{items&.size || 0} 条"
 
-    # 1. 仅处理有意义的建议
     valid_items = items.reject do |item|
       s = item[:suggestion].to_s.strip
       s.empty? || s.upcase == 'PASS'
     end
 
     if valid_items.empty?
-      puts "✅ 所有改动均通过 AI 评审。"
+      puts "✅ 经过过滤，没有需要发布的有效建议。"
       return
     end
 
-    # 2. 性能优化：循环外获取一次 SHA，避免重复请求
-    puts "📢 正在发布 #{valid_items.size} 条建议到 GitHub..."
+    # 修复变量错误：@platform 改为 "GitHub"
+    puts "📢 发现 #{valid_items.size} 条有效建议，准备发布..."
+
+    # 获取 SHA
     head_sha = @client.pull_request(@repo, @pr_number).head.sha
 
-    # 3. 遍历过滤后的集合
     valid_items.each do |item|
+      puts "DEBUG: 正在尝试发布评论到 #{item[:file_path]}:#{item[:line]}"
       begin
         @client.create_pull_request_comment(
-          @repo,
-          @pr_number,
-          "🤖 **[AI Review]**\n\n#{item[:suggestion]}",
+          @repo, @pr_number,
+          "[🤖 AI Review]\n\n#{item[:suggestion]}",
           head_sha,
           item[:file_path],
           item[:line]
         )
-      rescue Octokit::UnprocessableEntity
-        puts "⚠️ 无法在 #{item[:file_path]}:#{item[:line]} 发布行内评论，转为全局评论。"
+        puts "✨ 成功为 #{item[:file_path]} 第 #{item[:line]} 行添加评论"
+      rescue Octokit::UnprocessableEntity => e
+        puts "⚠️ 行内评论失败 (行号可能不在 Diff 内): #{e.message}"
         publish_fallback_comment(item)
-      rescue StandardError => e
-        puts "❌ 发布失败: #{e.message}"
+      rescue => e
+        puts "❌ 发布失败: #{e.class} - #{e.message}"
       end
     end
   end
-
+  
   private
 
   def publish_fallback_comment(item)
