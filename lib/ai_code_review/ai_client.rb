@@ -17,10 +17,10 @@ module AiCodeReview
       请对下方提供的 Ruby 代码进行深度评审。
       评审维度：1.安全隐患 2.逻辑缺陷 3.命名规范 4.Rails 最佳实践。
 
-      ### Strict Rules (自动化准则)
-      - **如果没有发现任何需要改进的点，请不要回复任何字符（严禁回复 PASS 或请求代码）。**
-      - 只有在确定存在优化空间时，才按照下方格式输出。
-      - 忽略琐碎的空格、引号等格式问题。
+      ### Operational Rules (重要)
+      - **Silence is Approval**: 如果代码符合标准，【严禁】输出任何字符。
+      - **Bypass Annotation**: 严禁评审处于 `# ai:disable` 到 `# ai:enable` 之间或包含 `# ai:skip` 的代码。
+      - **No Chat**: 严禁回复 PASS 或要求代码，没问题请保持绝对沉默。
 
       ### Source Code to Review
       File: %{file_path}
