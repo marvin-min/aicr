@@ -2,7 +2,8 @@
 
 require 'open3'
 require_relative 'ai_code_review/ai_client'
-
+# require_relative 'ai_code_review/code_processor'
+require_relative 'ai_code_review/reporter'
 module AiCodeReview
   class << self
     def start(project_root: '.', full_review: false, dry_run: true, platform: 'github', repo: nil, pr_number: nil, skip_ai: false)      # 打印出当前 get_ruby_diff_changes 到底是在哪个文件、哪一行定义的
