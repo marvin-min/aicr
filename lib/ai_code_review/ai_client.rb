@@ -3,73 +3,70 @@
 require 'net/http'
 require 'json'
 require 'uri'
+require 'cgi'
+require 'openssl'
 
 module AiCodeReview
   class AiClient
     DEFAULT_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
+    PROMPT_TEMPLATE = <<~PROMPT
+      ### Role
+      你是一位拥有 10 年经验的资深 Ruby on Rails 架构师。
+
+      ### Context
+      - 文件路径: %{file_path}
+      - 评审范围: %{scope}
+
+      ### Rules
+      - 无隐患则仅回复 "PASS"。
+      - 必须提供具体的优化建议代码。
+
+      ### 待评审代码内容:
+      %{content}
+    PROMPT
+
     def initialize
-      env_url = ENV['AI_API_URL']
-      @api_url = (env_url && !env_url.strip.empty?) ? env_url.strip : DEFAULT_API_URL
-      @api_key = ENV['AI_API_KEY']
-      # 保持你原有的默认模型 Qwen
-      @model   = ENV['AI_MODEL_NAME'] || "qwen-max"
+      # 采纳建议：环境变量 strip 处理
+      env_url = ENV['AI_API_URL']&.strip || DEFAULT_API_URL
+      @uri = parse_url(env_url)
 
-      raise "❌ AI_API_KEY 未设置" if @api_key.nil? || @api_key.strip.empty?
+      @api_key = ENV['AI_API_KEY']&.strip
+      @model   = ENV['AI_MODEL_NAME']&.strip || "qwen-max"
 
-      @uri = URI(@api_url)
-      if @uri.is_a?(URI::Generic) && !@uri.is_a?(URI::HTTP) && !@uri.is_a?(URI::HTTPS)
-        @uri = URI("https://#{@api_url}")
-      end
+      raise "❌ AI_API_KEY 未设置" if @api_key.nil? || @api_key.empty?
     end
 
-    # 核心功能优化：移除 static_issues，注入专业评审维度
     def get_review(file_path:, content:, lines:, is_full: false)
-      scope_instruction = is_full ? "全量评审该文件内容。" : "仅重点评审改动行（行号：#{lines.join(', ')}）。"
-
-      # 整合专业 Prompt 模板
-      prompt = <<~PROMPT
-        ### Role
-        你是一位拥有 10 年经验的资深 Ruby/Rails 专家，正在进行代码评审。
-
-        ### Context
-        - 文件路径: #{file_path}
-        - 评审范围: #{scope_instruction}
-
-        ### Review Dimensions (优先级排序)
-        1. **Security & Performance**: 检查 SQL 注入、越权风险、N+1 查询、内存溢出或慢查询。
-        2. **Business Logic**: 检查边界条件（nil 处理）、逻辑漏洞。
-        3. **Maintainability**: 检查复杂的嵌套、过长的方法、硬编码。
-        4. **Code Style**: 仅指出严重违反 Ruby 惯例的命名或风格。
-
-        ### Rules
-        - 如果代码表现完美，**必须仅回复 "PASS"**。
-        - 否则，请指出问题并给出**优化后的代码示例**。
-        - 忽略琐碎的空格、引号等格式问题。
-
-        ### 代码内容:
-        #{content}
-
-        ### Output Format (如果有建议)
-        #### 🛡️ 安全与性能 (Critical)
-        - [描述]
-        - ```ruby [建议代码] ```
-        #### 🧠 逻辑与架构 (Logic)
-        - [描述]
-        ---
-        #### 💡 综合评价
-        [一句话总结]
-      PROMPT
-
+      scope = is_full ? "全量评审" : "改动行: #{lines.join(', ')}"
+      # 采纳建议：对元数据进行转义处理，防止 Prompt 注入
+      prompt = PROMPT_TEMPLATE % {
+        file_path: CGI.escapeHTML(file_path),
+        scope: CGI.escapeHTML(scope),
+        content: content # 保持代码原文以利于 AI 理解逻辑
+      }
       call_ai_api(prompt)
     end
 
     private
 
+    def parse_url(url)
+      parsed = URI.parse(url)
+      return parsed if parsed.is_a?(URI::HTTP) || parsed.is_a?(URI::HTTPS)
+      URI.parse("https://#{url}")
+    rescue URI::InvalidURIError
+      raise "❌ 无效的 AI_API_URL: #{url}"
+    end
+
     def call_ai_api(prompt)
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = (@uri.scheme == 'https')
-      http.read_timeout = 180
+
+      # 采纳建议：SSL 安全加固
+      http.verify_mode = OpenSSL::SSL::VERIFY_PEER if http.use_ssl?
+
+      http.read_timeout = 120
+      http.open_timeout = 30
 
       request = Net::HTTP::Post.new(@uri.request_uri, {
         'Content-Type' => 'application/json',
@@ -79,20 +76,32 @@ module AiCodeReview
       request.body = {
         model: @model,
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1 # 保持低随机性
+        temperature: 0.1
       }.to_json
 
-      response = http.request(request)
-      if response.code == '200'
-        content = JSON.parse(response.body).dig('choices', 0, 'message', 'content')
-        # 兼容处理：只有明确回复 PASS 才跳过，否则返回建议
-        content.to_s.strip.upcase == 'PASS' ? nil : content
-      else
-        puts "⚠️ API 返回错误: #{response.code} - #{response.body}"
+      begin
+        response = http.request(request)
+        handle_response(response)
+      rescue Timeout::Error, Errno::ECONNRESET, EOFError, Net::ProtocolError, OpenSSL::SSL::SSLError => e
+        puts "⚠️ 通讯失败: #{e.message}"
+        nil
+      rescue StandardError => e
+        puts "⚠️ 未知错误: #{e.message}"
         nil
       end
-    rescue => e
-      puts "⚠️ AI 调用异常: #{e.message}"
+    end
+
+    def handle_response(response)
+      if response.code == '200'
+        res_body = JSON.parse(response.body)
+        content = res_body.dig('choices', 0, 'message', 'content')
+        (content.nil? || content.strip.upcase == 'PASS') ? nil : content
+      else
+        puts "⚠️ API 错误: #{response.code} - #{response.message}"
+        nil
+      end
+    rescue JSON::ParserError
+      puts "⚠️ API 返回了无效的 JSON"
       nil
     end
   end
