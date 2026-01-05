@@ -3,6 +3,7 @@
 require 'net/http'
 require 'json'
 require 'uri'
+require_relative 'code_processor'
 
 module AiCodeReview
   class AiClient
@@ -23,26 +24,37 @@ module AiCodeReview
       # 1. 构造任务描述
       scope_desc = is_full ? "全量评审整个文件" : "重点评审以下行号: #{lines.join(', ')}"
 
-      # 2. 将 Prompt 指令与具体代码完全隔离
-      # 使用 heredoc 构造用户消息，避免 % 导致的格式化报错
-      user_input = <<~USER_MSG
-          [目标文件]: #{file_path}
-          [评审范围]: #{scope_desc}
-          
-          [待评审源码]:
-          ```ruby
-          #{content}
-          ```
-          USER_MSG
+      # 2. 对代码内容进行预处理（骨架提取）
 
-      # 3. 发送给 API
-      # 这里的 @prompt_template 仅包含 expert.md 的纯指令内容
+      # --- 添加以下调试代码 ---
+      if ENV['DEBUG']
+        puts "\n" + "—" * 40
+        puts "DEBUG: 发送给 AI 的文件: #{file_path}"
+        puts "DEBUG: 原始行数: #{content.count("\n")}"
+        puts "—" * 40 + "\n"
+      end
+      # -----------------------
+      # 3. 将指令与加工后的代码构造为用户消息
+      user_input = <<~USER_MSG
+    [目标文件]: #{file_path}
+    [评审范围]: #{scope_desc}
+    
+    [待评审源码]:
+    ```ruby
+    #{content}
+    ```
+  USER_MSG
+
+      # 4. 发送给 API
       call_ai_api(system_prompt: @prompt_template, user_message: user_input)
     end
 
     private
 
-    def call_ai_api(prompt)
+    private
+
+    # 修正：支持接收两个参数，并修正调试变量名
+    def call_ai_api(system_prompt:, user_message:)
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = (@uri.scheme == 'https')
       http.read_timeout = 120
@@ -51,23 +63,42 @@ module AiCodeReview
         'Content-Type' => 'application/json',
         'Authorization' => "Bearer #{@api_key}"
       })
-      request.body = { model: @model, messages: [{ role: 'user', content: prompt }], temperature: 0.1 }.to_json
+
+      # 将 system_prompt 和 user_message 组合发送
+      request.body = {
+        model: @model,
+        messages: [
+          { role: 'system', content: system_prompt },
+          { role: 'user', content: user_message }
+        ],
+        temperature: 0.1
+      }.to_json
 
       begin
         response = http.request(request)
-        return nil unless response.code == '200'
+
+        # 如果 code 不是 200，在 DEBUG 模式下至少给个响声
+        if response.code != '200'
+          puts "❌ API 错误: #{response.code} - #{response.body}" if ENV['DEBUG']
+          return nil
+        end
 
         content = JSON.parse(response.body).dig('choices', 0, 'message', 'content')&.strip
 
-        # --- 极致自动化拦截逻辑 ---
-        # 1. 如果为空或包含 PASS，直接静默
-        return nil if content.nil? || content.empty? || content.upcase.include?("PASS")
+        # 修正变量名为 content
+        if ENV['DEBUG']
+          puts "\n--- AI 原始回复内容 ---"
+          puts content.nil? ? "空返回" : content
+          puts "------------------------\n"
+        end
 
-        # 2. 如果回复中没有结构化的标题（####），说明 AI 在闲聊或问问题，直接静默
+        # --- 极致自动化拦截逻辑 ---
+        return nil if content.nil? || content.empty? || content.upcase.include?("PASS")
         return nil unless content.include?("####")
 
         content
-      rescue StandardError
+      rescue StandardError => e
+        puts "⚠️ 发生异常: #{e.message}" if ENV['DEBUG']
         nil
       end
     end
