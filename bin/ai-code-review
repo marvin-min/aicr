@@ -52,7 +52,8 @@ end
 # 4. 启动程序
 begin
   AiCodeReview.start(
-    '.',
+    project_root: '.',  # <--- 加上这个标签
+    full_review: options[:full_review], # 别忘了把这个也传进去，否则 -f 参数会失效
     repo: repo,
     pr_number: pr_number,
     dry_run: is_dry_run,

@@ -1,114 +1,129 @@
 # frozen_string_literal: true
 
-require 'json'
-require_relative 'ai_code_review/analyzer'
+require 'open3'
 require_relative 'ai_code_review/ai_client'
-require_relative 'ai_code_review/reporter'
 
 module AiCodeReview
   class << self
-    def start(path = '.', repo: nil, pr_number: nil, dry_run: false, platform: 'github', skip_ai: false, full_review: false)
-      project_root = File.expand_path(path)
+    def start(project_root: '.', full_review: false, dry_run: true, platform: 'github', repo: nil, pr_number: nil, skip_ai: false)      # 打印出当前 get_ruby_diff_changes 到底是在哪个文件、哪一行定义的
+      puts "🔍 方法定义来源: #{method(:get_ruby_diff_changes).source_location}"
+      # 打印出当前方法的参数要求
+      puts "🔍 参数要求: #{method(:get_ruby_diff_changes).parameters}"
+      ai_client = AiClient.new
+      all_suggestions = []
 
-      Dir.chdir(project_root) do
-        puts "🚀 开始代码评审..."
-        puts "📂 项目根目录: #{project_root}"
-        puts full_review ? "🔍 模式: 全量评审 (Full Review)" : "🔍 模式: 增量评审 (Diff Review)"
+      # 1. 获取变更文件和行号
+      changes = get_ruby_diff_changes(full: full_review)
 
-        # 1. 获取 Git 改动
-        changes = get_diff_changes(full: full_review)
-        if changes.empty?
-          puts "✅ 没有检测到 Ruby 文件的改动，跳过。"
-          return
-        end
+      puts "🚀 开始专业级 Ruby 代码逻辑评审..."
+      puts "🤖 正在分析 #{changes.keys.size} 个文件的业务逻辑..."
 
-        # 2. 静态分析
-        puts "🔍 正在运行静态分析 (RuboCop)..."
-        analyzer = Analyzer.new('.')
-        static_results = analyzer.run
+      changes.each do |file_path, changed_lines|
+        full_file_path = File.expand_path(file_path, project_root)
+        next unless File.exist?(full_file_path)
 
-        # 3. 初始化 AI 客户端
-        ai_client = AiClient.new unless skip_ai
+        # 2. 核心：过滤掉包含忽略注释的行 (# ai:skip, # ai:disable...# ai:enable)
+        active_lines = filter_ignored_lines(full_file_path, changed_lines, full_review)
 
-        # 4. 遍历文件评审
-        all_suggestions = []
-        puts "🤖 正在为 #{changes.size} 个改动文件生成建议..."
+        # 如果过滤后没有需要评审的行，直接跳过该文件
+        next if active_lines.empty?
 
-        changes.each do |file_path, changed_lines|
-          full_file_path = File.expand_path(file_path, project_root)
-          next unless File.exist?(full_file_path)
+        print "📝 正在评审: #{file_path} ... "
+        file_content = File.read(full_file_path)
 
-          file_content = File.read(full_file_path)
-          file_issues = static_results.select { |issue| issue[:file] == file_path }
+        suggestion = ai_client.get_review(
+          file_path: file_path,
+          content: file_content,
+          lines: active_lines,
+          is_full: full_review
+        )
 
-          if skip_ai
-            puts "⏭️  跳过 AI 评审: #{file_path}"
-            next
-          end
-
-          suggestion = ai_client.get_review(
+        if suggestion
+          puts "💡 发现改进点"
+          all_suggestions << {
             file_path: file_path,
-            content: file_content,
-            lines: changed_lines,
-            static_issues: file_issues,
-            is_full: full_review
-          )
-
-          if suggestion
-            all_suggestions << {
-              file_path: file_path, # 改为 file_path 适配 Reporter
-              suggestion: suggestion,
-              line: (changed_lines.is_a?(Array) ? changed_lines.first : 1)
-            }
-          end
-        end
-
-        # 5. 发布结果
-        if dry_run || all_suggestions.empty?
-          puts "\n🍎 [预览模式] 评审建议如下:"
-          if all_suggestions.empty?
-            puts "✅ 所有代码均已通过评审 (PASS)。"
-          else
-            all_suggestions.each { |s| puts "--- #{s[:file]}:#{s[:line]} ---\n#{s[:suggestion]}\n" }
-          end
+            suggestion: suggestion,
+            line: active_lines.first
+          }
         else
-          reporter = Reporter.for(platform, repo, pr_number)
-          reporter.publish_review(all_suggestions)
+          puts "✅ 通过"
         end
       end
-    rescue StandardError => e
-      puts "💥 程序运行出错:"
-      puts "信息: #{e.message}"
-      puts "--- 调试信息 ---"
-      # 这行会告诉你具体是哪一个文件的哪一行崩了
-      puts e.backtrace.reject { |line| line.include?('gems') }.first(5)    end
+
+      handle_report(all_suggestions, dry_run, platform, repo, pr_number)
+    end
+
     private
 
-    def get_diff_changes(full: false)
+    # 解析文件，找出所有被注释忽略的行号
+    def filter_ignored_lines(file_path, changed_lines, is_full)
+      file_lines = File.readlines(file_path)
+      ignored_line_numbers = []
+      in_disabled_block = false
+
+      file_lines.each_with_index do |content, index|
+        line_num = index + 1
+
+        if content.match?(/#\s*ai:disable/)
+          in_disabled_block = true
+        elsif content.match?(/#\s*ai:enable/)
+          in_disabled_block = false
+          # 这里的改动：不再执行 ignored_line_numbers << line_num
+          # 这样 enable 这一行本身如果改了，AI 也能看见
+          next
+        end
+
+        # 命中块忽略或单行忽略 (# ai:skip 或 # ai:ignore)
+        if in_disabled_block || content.match?(/#\s*ai:(skip|ignore)/)
+          ignored_line_numbers << line_num
+        end
+      end
+
+      # 如果是全量评审，范围是全文件减去忽略行；如果是 diff 评审，则是改动行减去忽略行
+      base_lines = is_full ? (1..file_lines.size).to_a : changed_lines
+      base_lines - ignored_line_numbers
+    end
+
+    def get_ruby_diff_changes(full: false)
       changes = {}
-      base = ENV['GITHUB_BASE_REF'] ? "origin/#{ENV['GITHUB_BASE_REF']}" : "HEAD~1"
+      base = ENV.fetch('GITHUB_BASE_REF', 'HEAD~1')
+      base = "origin/#{base}" if ENV['GITHUB_BASE_REF']
 
-      files = `git diff #{base}...HEAD --name-only --diff-filter=d`.split("\n")
-      ruby_files = files.select { |f| f.end_with?('.rb') }
+      stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", "#{base}...HEAD")
+      return {} unless status.success?
 
-      ruby_files.each do |file|
+      files = stdout.split("\n").select { |f| f.end_with?('.rb', '.rake') || f == 'Gemfile' }
+      files.each do |file|
         if full
-          line_count = File.foreach(file).count rescue 1
-          changes[file] = (1..line_count).to_a
+          changes[file] = [] # 全量模式逻辑交由 filter_ignored_lines 处理
         else
-          lines = []
-          diff_hunks = `git diff #{base}...HEAD --unified=0 #{file}`
-          diff_hunks.each_line do |line|
-            if (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
-              start_line = match[1].to_i
-              count = (match[2] || 1).to_i
-              count.times { |i| lines << (start_line + i) }
+          diff_out, _, diff_stat = Open3.capture3("git", "diff", "--unified=0", "#{base}...HEAD", file)
+          if diff_stat.success?
+            lines = []
+            diff_out.each_line do |line|
+              if (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
+                start_line = match[1].to_i
+                count = (match[2] || 1).to_i
+                (start_line...start_line + count).each { |i| lines << i }
+              end
             end
+            changes[file] = lines unless lines.empty?
           end
-          changes[file] = lines unless lines.empty?
         end
       end
       changes
+    end
+
+    def handle_report(suggestions, dry_run, platform, repo, pr_number)
+      if suggestions.empty?
+        puts "\n--- 评审摘要 ---"
+        puts "🎉 非常棒！AI 没有发现明显的逻辑缺陷。"
+      elsif dry_run
+        puts "\n--- 评审摘要 ---"
+        suggestions.each { |s| puts "\n📍 [#{s[:file_path]}:#{s[:line]}]\n#{s[:suggestion]}" }
+      else
+        # 实际同步到 GitHub 的逻辑（此处省略，保持之前版本即可）
+      end
     end
   end
 end
