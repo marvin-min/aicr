@@ -7,38 +7,10 @@ require 'uri'
 module AiCodeReview
   class AiClient
     DEFAULT_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-
-    # 1. 专业的全维度 Template，强制要求无发现不准回复
-    PROMPT_TEMPLATE = <<~PROMPT
-      ### Role
-      你是一位追求极致品质的资深 Ruby on Rails 架构师。
-
-      ### Task
-      请对下方提供的 Ruby 代码进行深度评审。
-      评审维度：1.安全隐患 2.逻辑缺陷 3.命名规范 4.Rails 最佳实践。
-
-      ### Operational Rules (重要)
-      - **Silence is Approval**: 如果代码符合标准，【严禁】输出任何字符。
-      - **Bypass Annotation**: 严禁评审处于 `# ai:disable` 到 `# ai:enable` 之间或包含 `# ai:skip` 的代码。
-      - **No Chat**: 严禁回复 PASS 或要求代码，没问题请保持绝对沉默。
-
-      ### Source Code to Review
-      File: %{file_path}
-      Scope: %{scope}
-      [CODE_START]
-      %{content}
-      [CODE_END]
-
-      ### Output Format (仅在有建议时)
-      #### 🛠️ [类别]
-      - **Issue**: [精准描述]
-      - **Fix**:
-      ```ruby
-      [建议代码]
-      ```
-    PROMPT
+    PROMPT_PATH = File.expand_path('prompts/default.md', __dir__)
 
     def initialize
+      @prompt_template = File.read(PROMPT_PATH)
       env_url = ENV['AI_API_URL']&.strip || DEFAULT_API_URL
       @uri = URI.parse(env_url.start_with?('http') ? env_url : "https://#{env_url}")
       @api_key = ENV['AI_API_KEY']&.strip
@@ -48,9 +20,24 @@ module AiCodeReview
     end
 
     def get_review(file_path:, content:, lines:, is_full: false)
-      scope = is_full ? "全量评审" : "改动行: #{lines.join(', ')}"
-      prompt = PROMPT_TEMPLATE % { file_path: file_path, scope: scope, content: content }
-      call_ai_api(prompt)
+      # 1. 构造任务描述
+      scope_desc = is_full ? "全量评审整个文件" : "重点评审以下行号: #{lines.join(', ')}"
+
+      # 2. 将 Prompt 指令与具体代码完全隔离
+      # 使用 heredoc 构造用户消息，避免 % 导致的格式化报错
+      user_input = <<~USER_MSG
+          [目标文件]: #{file_path}
+          [评审范围]: #{scope_desc}
+          
+          [待评审源码]:
+          ```ruby
+          #{content}
+          ```
+          USER_MSG
+
+      # 3. 发送给 API
+      # 这里的 @prompt_template 仅包含 expert.md 的纯指令内容
+      call_ai_api(system_prompt: @prompt_template, user_message: user_input)
     end
 
     private

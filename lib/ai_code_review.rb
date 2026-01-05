@@ -5,7 +5,10 @@ require_relative 'ai_code_review/ai_client'
 
 module AiCodeReview
   class << self
-    def start(project_root: '.', full_review: false, dry_run: true, platform: 'github', repo: nil, pr_number: nil)
+    def start(project_root: '.', full_review: false, dry_run: true, platform: 'github', repo: nil, pr_number: nil, skip_ai: false)      # 打印出当前 get_ruby_diff_changes 到底是在哪个文件、哪一行定义的
+      puts "🔍 方法定义来源: #{method(:get_ruby_diff_changes).source_location}"
+      # 打印出当前方法的参数要求
+      puts "🔍 参数要求: #{method(:get_ruby_diff_changes).parameters}"
       ai_client = AiClient.new
       all_suggestions = []
 
@@ -65,7 +68,8 @@ module AiCodeReview
           in_disabled_block = true
         elsif content.match?(/#\s*ai:enable/)
           in_disabled_block = false
-          ignored_line_numbers << line_num # 标记行本身也忽略
+          # 这里的改动：不再执行 ignored_line_numbers << line_num
+          # 这样 enable 这一行本身如果改了，AI 也能看见
           next
         end
 
