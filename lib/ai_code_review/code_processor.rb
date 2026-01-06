@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module AiCodeReview
   class CodeProcessor
     # 定义默认的上下文行数

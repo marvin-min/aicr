@@ -18,72 +18,42 @@ module AiCodeReview
     def initialize(repo, pr_number)
       @repo = repo
       @pr_number = pr_number.to_i
-      # 支持从不同的环境变量读取，更灵活
-      @token = ENV['GITHUB_TOKEN'] || ENV['AI_REVIEW_TOKEN']
-
-      raise "❌ 缺少 GITHUB_TOKEN，请检查环境变量设置" if @token.nil? || @token.empty?
-
-      @client = Octokit::Client.new(access_token: @token)
+      @client = Octokit::Client.new(access_token: ENV.fetch('GITHUB_TOKEN', nil))
     end
 
     def publish_review(items)
-      puts "DEBUG: 收到 AI 建议共 #{items&.size || 0} 条"
+      # 1. 准备 Commit SHA
+      head_sha = @client.pull_request(@repo, @pr_number).head.sha
 
-      valid_items = items.reject do |item|
-        s = item[:suggestion].to_s.strip
-        s.empty? || s.upcase == 'PASS'
+      # 2. 将 AI 的建议转换成 GitHub 期待的 "Draft Comments" 格式
+      # 每一项都会对应到具体的行
+      draft_comments = items.map do |item|
+        {
+          path: item[:file_path],
+          line: item[:line].to_i, # 必须是精准行号
+          side: 'RIGHT',
+          body: "[🤖 AI 建议]\n#{item[:suggestion]}"
+        }
       end
 
-      if valid_items.empty?
-        puts "✅ 经过过滤，没有需要发布的有效建议。"
+      if draft_comments.empty?
+        puts '✅ 没有发现问题，无需创建 Review。'
         return
       end
 
-      puts "📢 发现 #{valid_items.size} 条有效建议，准备发布至 GitHub..."
-
-      # 💡 优化：获取当前 PR 最新的 Commit SHA
-      begin
-        pr_info = @client.pull_request(@repo, @pr_number)
-        head_sha = pr_info.head.sha
-      rescue => e
-        puts "❌ 无法获取 PR 信息: #{e.message}"
-        return
-      end
-
-      valid_items.each do |item|
-        puts "DEBUG: 正在尝试发布评论到 #{item[:file_path]}:#{item[:line]}"
-        begin
-          # GitHub API 需要四个关键参数：path, position/line, body, commit_id
-          @client.create_pull_request_comment(
-            @repo,
-            @pr_number,
-            "[🤖 AI Review]\n\n#{item[:suggestion]}",
-            head_sha,
-            item[:file_path],
-            item[:line]
-          )
-          puts "✨ 成功为 #{item[:file_path]} 第 #{item[:line]} 行添加评论"
-        rescue Octokit::UnprocessableEntity => e
-          # 常见的错误是 line 不在 diff 中，这时调用 fallback
-          puts "⚠️ 行内评论失败 (可能是行号不在本次 Diff 范围内): #{e.message}"
-          publish_fallback_comment(item)
-        rescue => e
-          puts "❌ 发布失败: #{e.class} - #{e.message}"
-        end
-      end
-    end
-
-    private
-
-    def publish_fallback_comment(item)
-      body = <<~MARKDOWN
-        ### 🤖 AI 补充建议
-        **文件**: `#{item[:file_path]}` (第 #{item[:line]} 行)
-        **建议**: 
-        #{item[:suggestion]}
-      MARKDOWN
-      @client.add_comment(@repo, @pr_number, body)
-      puts "📝 已将建议作为普通评论发布至 PR"
+      # 3. 核心步骤：这就是你说的 "Start a review" 并 "Submit"
+      # 这一个 API 调用就完成了：开启评审 -> 添加多个行内评论 -> 提交评审
+      @client.create_pull_request_review(
+        @repo,
+        @pr_number,
+        {
+          commit_id: head_sha,
+          event: 'COMMENT', # 对应 "Comment" 模式，也可以是 "REQUEST_CHANGES"
+          body: "🤖 AI 代码评审已完成，共发现 #{draft_comments.size} 处改进建议。",
+          comments: draft_comments
+        }
+      )
+      puts '🚀 批量行内评审已成功提交！'
     end
   end
 end

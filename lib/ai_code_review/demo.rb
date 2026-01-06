@@ -1,15 +1,18 @@
-class Demo
-  def abc;end
+# frozen_string_literal: true
 
-  def condition param
-    if param == 1
-      return 1
-    elsif param == 2
-      return 2
-    elsif param == 3
-      return 3
+class Demo
+  def abc; end
+
+  def condition(param)
+    case param
+    when 1
+      1
+    when 2
+      2
+    when 3
+      3
     else
-      return param.to_i
+      param.to_i
     end
   end
 end

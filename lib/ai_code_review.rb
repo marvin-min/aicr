@@ -6,7 +6,11 @@ require_relative 'ai_code_review/ai_client'
 require_relative 'ai_code_review/reporter'
 module AiCodeReview
   class << self
-    def start(project_root: '.', full_review: false, dry_run: true, platform: 'github', repo: nil, pr_number: nil, skip_ai: false)      # 打印出当前 get_ruby_diff_changes 到底是在哪个文件、哪一行定义的
+    # 打印出当前 get_ruby_diff_changes 到底是在哪个文件、哪一行定义的
+    def start(repo:, pr_number:, project_root: '.', **options)
+      full_review = options.fetch(:full_review, false)
+      dry_run     = options.fetch(:dry_run, true)
+      platform    = options.fetch(:platform, 'github')
       puts "🔍 方法定义来源: #{method(:get_ruby_diff_changes).source_location}"
       # 打印出当前方法的参数要求
       puts "🔍 参数要求: #{method(:get_ruby_diff_changes).parameters}"
@@ -16,10 +20,11 @@ module AiCodeReview
       # 1. 获取变更文件和行号
       changes = get_ruby_diff_changes(full: full_review)
 
-      puts "🚀 开始专业级 Ruby 代码逻辑评审..."
+      puts '🚀 开始专业级 Ruby 代码逻辑评审...'
       puts "🤖 正在分析 #{changes.keys.size} 个文件的业务逻辑..."
 
       changes.each do |file_path, changed_lines|
+        puts "DEBUG: 文件 #{file_path} 的改动行号列表: #{changed_lines.inspect}"
         full_file_path = File.expand_path(file_path, project_root)
         next unless File.exist?(full_file_path)
 
@@ -32,22 +37,26 @@ module AiCodeReview
         print "📝 正在评审: #{file_path} ... "
         file_content = File.read(full_file_path)
 
-        suggestion = ai_client.get_review(
+        review_results = ai_client.get_review(
           file_path: file_path,
           content: file_content,
           lines: active_lines,
           is_full: full_review
         )
 
-        if suggestion
-          puts "💡 发现改进点"
-          all_suggestions << {
-            file_path: file_path,
-            suggestion: suggestion,
-            line: active_lines.first
-          }
+        if review_results.is_a?(Array) && !review_results.empty?
+          puts "💡 发现 #{review_results.size} 个改进点"
+
+          review_results.each do |res|
+            # 3. 这里的 line 是 AI 告诉我们的精准行号
+            all_suggestions << {
+              file_path: file_path,
+              suggestion: res['suggestion'],
+              line: res['line'].to_i
+            }
+          end
         else
-          puts "✅ 通过"
+          puts '✅ 通过'
         end
       end
 
@@ -75,29 +84,32 @@ module AiCodeReview
         end
 
         # 命中块忽略或单行忽略 (# ai:skip 或 # ai:ignore)
-        if in_disabled_block || content.match?(/#\s*ai:(skip|ignore)/)
-          ignored_line_numbers << line_num
-        end
+        ignored_line_numbers << line_num if in_disabled_block || content.match?(/#\s*ai:(skip|ignore)/)
       end
 
       # 如果是全量评审，范围是全文件减去忽略行；如果是 diff 评审，则是改动行减去忽略行
       base_lines = is_full ? (1..file_lines.size).to_a : changed_lines
       base_lines - ignored_line_numbers
     end
+
     def get_ruby_diff_changes(full: false)
       changes = {}
-      target = ENV.fetch('TARGET_BRANCH', 'master').gsub(/^origin\//, '')
+      target = ENV.fetch('TARGET_BRANCH', 'master').gsub(%r{^origin/}, '')
       is_ci = ENV.include?('GITHUB_ACTIONS')
 
       # 1. 确定基准引用
-      base_ref = is_ci ? "origin/#{target}" : (system("git rev-parse --verify origin/#{target} >/dev/null 2>&1") ? "origin/#{target}" : target)
+      base_ref = if is_ci
+                   "origin/#{target}"
+                 else
+                   (system("git rev-parse --verify origin/#{target} >/dev/null 2>&1") ? "origin/#{target}" : target)
+                 end
 
       # 2. 获取分叉点
       merge_base = `git merge-base #{base_ref} HEAD`.strip
-      merge_base = "HEAD~1" if merge_base.empty?
+      merge_base = 'HEAD~1' if merge_base.empty?
 
       # 3. 获取文件列表
-      stdout, _, status = Open3.capture3("git", "diff", "--name-only", "--diff-filter=d", merge_base)
+      stdout, _, status = Open3.capture3('git', 'diff', '--name-only', '--diff-filter=d', merge_base)
       return {} unless status.success?
 
       files = stdout.split("\n").select do |f|
@@ -115,16 +127,16 @@ module AiCodeReview
           changes[file] = []
         else
           # ✅ 修复点：将 base 改为 merge_base，并去掉 ...HEAD 以支持未提交代码
-          diff_out, _, diff_stat = Open3.capture3("git", "diff", "--unified=0", merge_base, file)
+          diff_out, _, diff_stat = Open3.capture3('git', 'diff', '--unified=0', merge_base, file)
 
           if diff_stat.success?
             lines = []
             diff_out.each_line do |line|
-              if (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
-                start_line = match[1].to_i
-                count = (match[2] || 1).to_i
-                (start_line...start_line + count).each { |i| lines << i }
-              end
+              next unless (match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/))
+
+              start_line = match[1].to_i
+              count = (match[2] || 1).to_i
+              (start_line...start_line + count).each { |i| lines << i }
             end
             changes[file] = lines unless lines.empty?
           end
@@ -191,7 +203,7 @@ module AiCodeReview
     def handle_report(suggestions, dry_run, platform, repo, pr_number)
       if suggestions.empty?
         puts "\n--- 评审摘要 ---"
-        puts "🎉 非常棒！AI 没有发现明显的逻辑缺陷。"
+        puts '🎉 非常棒！AI 没有发现明显的逻辑缺陷。'
         return
       end
 
@@ -209,7 +221,7 @@ module AiCodeReview
 
           # 执行发布逻辑
           reporter.publish_review(suggestions)
-        rescue => e
+        rescue StandardError => e
           puts "❌ 发布报告时出错: #{e.message}"
           # 发生错误时，降级打印到控制台，确保建议不丢失
           suggestions.each { |s| puts "\n📍 [#{s[:file_path]}:#{s[:line]}]\n#{s[:suggestion]}" }
