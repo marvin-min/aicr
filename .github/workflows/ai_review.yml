@@ -28,12 +28,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动生成的 Token
           AI_API_KEY: ${{ secrets.AI_API_KEY }}     # 你需要去 GitHub Settings 预设这个
+          TARGET_BRANCH: ${{ github.base_ref }}
           AI_API_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           AI_MODEL_NAME: "qwen-max"
         run: |
           # 提取当前仓库名和 PR 编号
           REPO=${{ github.repository }}
           PR_NUMBER=${{ github.event.pull_request.number }}
-          
+      
           # 执行你的脚本
           bundle exec ./bin/ai-code-review --repo "$REPO" --pr "$PR_NUMBER"

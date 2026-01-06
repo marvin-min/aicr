@@ -1,0 +1,35 @@
+AllCops:
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - 'bin/*'
+    - 'lib/ai_code_review/demo.rb' # 演示代码不需要评审
+
+# 1. 放宽长度限制
+Metrics/MethodLength:
+  Max: 40 # 将默认的 10 行放宽到 40 行
+
+Metrics/ClassLength:
+  Max: 200
+
+Layout/LineLength:
+  Max: 150 # 允许更长的行，方便处理 Shell 命令
+
+# 2. 放宽复杂度限制
+Metrics/AbcSize:
+  Max: 50
+
+Metrics/CyclomaticComplexity:
+  Max: 20
+
+Metrics/PerceivedComplexity:
+  Max: 20
+
+# 3. 忽略文档注释要求（如果你不想写那堆冗长的文档）
+Style/Documentation:
+  Enabled: false
+
+# 4. 允许 1 == 1 这种在 demo.rb 里的故意写法
+Lint/BinaryOperatorWithIdenticalOperands:
+  Exclude:
+    - 'lib/demo.rb'
